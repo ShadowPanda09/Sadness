@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://cag8pa4wmt4ud"
-path="res://.godot/imported/arrow.png-af9c40b335090227900bc7e5c1ee343c.ctex"
+uid="uid://c2lr21gx8ibq6"
+path="res://.godot/imported/LandscapeAtlas.png-f53bb1e0b495bd47e8dca81d839daa39.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://assets/arrow.png"
-dest_files=["res://.godot/imported/arrow.png-af9c40b335090227900bc7e5c1ee343c.ctex"]
+source_file="res://assets/world/LandscapeAtlas.png"
+dest_files=["res://.godot/imported/LandscapeAtlas.png-f53bb1e0b495bd47e8dca81d839daa39.ctex"]
 
 [params]
 

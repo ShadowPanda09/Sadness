@@ -2,16 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://cag8pa4wmt4ud"
-path="res://.godot/imported/arrow.png-af9c40b335090227900bc7e5c1ee343c.ctex"
+uid="uid://b4fclswm3hfcp"
+path="res://.godot/imported/kamigawa_tileset_32x32_grid.png-e5821f13aa862317dadb59fa3be9d09c.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://assets/arrow.png"
-dest_files=["res://.godot/imported/arrow.png-af9c40b335090227900bc7e5c1ee343c.ctex"]
+source_file="res://assets/kamigawa_tileset_32x32_grid.png"
+dest_files=["res://.godot/imported/kamigawa_tileset_32x32_grid.png-e5821f13aa862317dadb59fa3be9d09c.ctex"]
 
 [params]
 
