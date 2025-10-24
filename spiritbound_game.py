@@ -378,8 +378,12 @@ class Knight(pygame.sprite.Sprite):
 
 # -------------------------- Game --------------------------
 
+# -------------------------- Game --------------------------
+
 class Game:
     def __init__(self):
+        self.respawn_count = 0
+        self.knight_speed_scale = 1.0  # multiplier applied to all knights
         pygame.init()
         self.screen = pygame.display.set_mode((V_WIDTH, V_HEIGHT), pygame.RESIZABLE)
         pygame.display.set_caption("Spiritbound - Neon Arena")
@@ -395,11 +399,7 @@ class Game:
 
         # spawn knights in corners
         self.knights = []
-        spawn_positions = [(40, 40), (self.virtual_width - 40, 40),
-                           (40, self.virtual_height - 40), (self.virtual_width - 40, self.virtual_height - 40)]
-        for pos in spawn_positions:
-            k = Knight(pos[0], pos[1], self.player, self.bounds_rect, self.knights)
-            self.knights.append(k)
+        self.spawn_initial_knights()
 
         self.color_index = random.randrange(len(NEON_COLORS))
         self.border_color, self.floor_color = NEON_COLORS[self.color_index]
@@ -409,6 +409,39 @@ class Game:
         self.pulse_color = tuple(min(255, c + 100) for c in self.border_color)
         self.death_fade_start = None
         self.show_retry = False   
+
+    # ---------------- Knight spawning ----------------
+    def spawn_initial_knights(self):
+        """Spawn initial wave of 4 knights with speed scaling applied."""
+        spawn_positions = [(40, 40), (self.virtual_width - 40, 40),
+                           (40, self.virtual_height - 40), (self.virtual_width - 40, self.virtual_height - 40)]
+        self.knights.clear()
+        for pos in spawn_positions:
+            k = Knight(pos[0], pos[1], self.player, self.bounds_rect, self.knights)
+            k.speed *= self.knight_speed_scale
+            self.knights.append(k)
+
+    # ---------------- Respawn ----------------
+    def respawn_player(self):
+        """Reset player and knights, applying slow effect for first two respawns."""
+        self.respawn_count += 1
+
+        # Set speed scale based on respawn number
+        if self.respawn_count == 1:
+            self.knight_speed_scale = 0.8
+        elif self.respawn_count == 2:
+            self.knight_speed_scale = 0.6
+        else:
+            self.knight_speed_scale = 1.0
+            self.respawn_count = 0  # reset cycle
+
+        # Reset player
+        self.player.health = PLAYER_MAX_HEALTH
+        self.player.dead = False
+        self.death_fade_start = None
+
+        # Reset knights
+        self.spawn_initial_knights()
 
     # ---------------- Handle Events ----------------
     def handle_events(self):
@@ -424,7 +457,7 @@ class Game:
             if self.show_retry:
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_r:  # Respawn
-                        self.reset_game()
+                        self.respawn_player()
                         self.show_retry = False
                         return
                     elif event.key == pygame.K_m:  # Menu
@@ -434,32 +467,25 @@ class Game:
                         pygame.display.quit()
                         spiritbound_title.main_menu()
                         return
-                elif event.type == pygame.MOUSEBUTTONDOWN:
-                    # optional: allow clicking text/buttons if you later add rects
-                    pass
-                # While death menu shown, skip the rest of input processing
                 continue
 
-            # --- Normal game inputs when not in death menu ---
+            # --- Normal game inputs ---
             elif event.type == pygame.KEYDOWN:
-                # allow dash to start also on keydown
                 if event.key == pygame.K_LSHIFT:
                     self.player.try_start_dash()
 
             elif event.type == pygame.MOUSEBUTTONDOWN:
-                if event.button == 1:  # left click -> swing toward mouse
+                if event.button == 1:
                     mx, my = pygame.mouse.get_pos()
-                    # convert mouse coords to virtual coords (no scaling implemented here so same)
                     aim_angle = math.atan2(my - self.player.rect.centery, mx - self.player.rect.centerx)
                     self.player.try_start_swing(aim_angle)
 
     # ---------------- Update ----------------
     def update(self, dt):
         keys = pygame.key.get_pressed()
-        # update player (movement, dash, swing)
         self.player.update(keys, self.bounds_rect, dt)
 
-        # Sword hitting knights: compute tip each frame during active swing and damage once per knight per swing
+        # Sword hitting knights
         now = pygame.time.get_ticks()
         if self.player.swinging:
             elapsed = now - self.player.swing_start_time
@@ -470,10 +496,9 @@ class Game:
             tip = pygame.Vector2(self.player.pos.x + math.cos(sword_angle) * self.player.sword_length,
                                  self.player.pos.y + math.sin(sword_angle) * self.player.sword_length)
             for knight in list(self.knights):
-                if knight.rect.center:  # sanity
+                if knight.rect.center:
                     kx, ky = knight.rect.center
                     if math.hypot(kx - tip.x, ky - tip.y) <= PLAYER_SWORD_HIT_RADIUS:
-                        # apply damage and remove or mark
                         knight.take_damage(SWORD_DAMAGE)
                         if knight.health <= 0:
                             try:
@@ -481,30 +506,28 @@ class Game:
                             except ValueError:
                                 pass
 
-        # update knights
+        # Update knights
         for k in self.knights:
             k.update()
-            if len(self.knights) < 4:
-                spawn_positions = [(40, 40), (self.virtual_width - 40, 40),
-                                (40, self.virtual_height - 40), (self.virtual_width - 40, self.virtual_height - 40)]
-                while len(self.knights) < 4:
-                    pos = random.choice(spawn_positions)
-                    k = Knight(pos[0], pos[1], self.player, self.bounds_rect, self.knights)
-                    self.knights.append(k)
 
-        # handle player death
+        # Ensure at least 4 knights alive (spawn new ones mid-life)
+        spawn_positions = [(40, 40), (self.virtual_width - 40, 40),
+                           (40, self.virtual_height - 40), (self.virtual_width - 40, self.virtual_height - 40)]
+        while len(self.knights) < 4:
+            pos = random.choice(spawn_positions)
+            k = Knight(pos[0], pos[1], self.player, self.bounds_rect, self.knights)
+            k.speed *= self.knight_speed_scale  # Apply current slowdown
+            self.knights.append(k)
+
+        # Handle player death
         if self.player.dead:
             if self.death_fade_start is None:
-                # Start the fade timer
                 self.death_fade_start = pygame.time.get_ticks()
-            else:
-                # Check how long it's been since death
-                elapsed = pygame.time.get_ticks() - self.death_fade_start
-                if elapsed > DEATH_FADE_DURATION:
-                    self.show_retry = True
+            elif (pygame.time.get_ticks() - self.death_fade_start) > DEATH_FADE_DURATION:
+                self.show_retry = True
             return
 
-        # color change
+        # Neon color cycling
         now = pygame.time.get_ticks()
         if now - self.last_color_change > self.color_interval:
             indices = [i for i in range(len(NEON_COLORS)) if i != self.color_index]
@@ -513,49 +536,9 @@ class Game:
             self.pulse_start = now
             self.pulse_color = tuple(min(255, c + 100) for c in self.border_color)
             self.last_color_change = now
-    def show_death_menu(self):
-        """Display simple death screen with Respawn/Menu options."""
-        import spiritbound_title  # import here to avoid circular imports
-        font = pygame.font.SysFont(None, 48)
-        small_font = pygame.font.SysFont(None, 32)
-
-        while True:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    pygame.quit()
-                    sys.exit()
-                elif event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_r:  # Respawn
-                        self.reset_game()
-                        return
-                    elif event.key == pygame.K_m:  # Return to main menu
-                        pygame.mixer.stop()
-                        self.running = False
-                        pygame.display.quit()
-                        spiritbound_title.main_menu()
-                        return
-
-            # draw the death screen
-            self.screen.fill((0, 0, 0))
-            text = font.render("You Died", True, (255, 50, 50))
-            respawn_text = small_font.render("[R] Respawn", True, (255, 255, 255))
-            menu_text = small_font.render("[M] Menu", True, (200, 200, 200))
-
-            self.screen.blit(text, (self.window_width // 2 - text.get_width() // 2,
-                                    self.window_height // 2 - 100))
-            self.screen.blit(respawn_text, (self.window_width // 2 - respawn_text.get_width() // 2,
-                                            self.window_height // 2))
-            self.screen.blit(menu_text, (self.window_width // 2 - menu_text.get_width() // 2,
-                                         self.window_height // 2 + 40))
-
-            pygame.display.flip()
-            self.clock.tick(30)
 
     # ---------------- Draw ----------------
     def draw(self):
-        if self.death_fade_start is None:
-            self.death_fade_start = 0 
-
         scale_x = self.window_width / self.virtual_width
         scale_y = self.window_height / self.virtual_height
 
@@ -638,17 +621,7 @@ class Game:
             self.screen.blit(menu_txt, (cx - menu_txt.get_width() // 2, cy + 48))
 
         pygame.display.flip()
-    def reset_game(self):
-        """Resets player and enemies after death."""
-        self.player = Player(self.virtual_width // 2, self.virtual_height // 2)
-        self.knights.clear()
-        spawn_positions = [(40, 40), (self.virtual_width - 40, 40),
-                           (40, self.virtual_height - 40), (self.virtual_width - 40, self.virtual_height - 40)]
-        for pos in spawn_positions:
-            k = Knight(pos[0], pos[1], self.player, self.bounds_rect, self.knights)
-            self.knights.append(k)
-        self.death_fade_start = None
-        self.show_retry = False
+
     # ---------------- Run ----------------
     def run(self):
         while self.running:
