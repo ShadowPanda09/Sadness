@@ -2,30 +2,37 @@ import pygame
 import sys
 import random
 import math
-import spiritbound_title
 
 # --- Constants ---
-V_WIDTH, V_HEIGHT = 640, 480  # virtual game resolution
+V_WIDTH, V_HEIGHT = 640, 480
 PLAYER_SIZE = 32
 FPS = 60
+
+# Dash
 DASH_SPEED = 30
 DASH_FRAMES = 3
 DASH_COOLDOWN = 400
 AFTERIMAGE_LIFETIME = 250
-BORDER_THICKNESS = 5  # thickness of neon boundary
+BORDER_THICKNESS = 5
 
-# --- Pulse effect ---
-PULSE_DURATION = 500  # milliseconds
-PULSE_ALPHA = 100     # max alpha of overlay
+# Sword/combat
+PLAYER_SWING_DURATION_MS = 150
+PLAYER_SWING_COOLDOWN_MS = 300
+PLAYER_SWORD_LENGTH = 60
+PLAYER_SWORD_HIT_RADIUS = 28
 
-# --- Hit effect ---
-HIT_FLASH_DURATION = 150  # milliseconds
-HIT_SHAKE_INTENSITY = 5   # pixels
+# Trail
+TRAIL_LIFETIME_MS = 220
+TRAIL_MAX_POINTS = 16
 
-# --- Death effect ---
-DEATH_FADE_DURATION = 1000  # milliseconds for black fade
+# Effects
+PULSE_DURATION = 500
+PULSE_ALPHA = 100
+HIT_FLASH_DURATION = 150
+HIT_SHAKE_INTENSITY = 5
+DEATH_FADE_DURATION = 1000
 
-# --- Neon color palettes ---
+# Colors
 NEON_COLORS = [
     ((0, 255, 180), (0, 100, 70)),
     ((0, 200, 255), (0, 80, 100)),
@@ -33,18 +40,12 @@ NEON_COLORS = [
     ((0, 255, 120), (0, 100, 50)),
 ]
 
-# Shockwave (ripple distortion) settings
-RIPPLE_INTENSITY = 0.015  # higher = stronger warp
-RIPPLE_WAVES = 5          # how many wave rings appear
-RIPPLE_SPEED = 6.0        # how fast they move
-RIPPLE_RES = 160  # much smaller than 640x480
-
-# -------------------------- HEALTH --------------------------
+# Health / damage
 PLAYER_MAX_HEALTH = 100
 KNIGHT_DAMAGE = 15
+SWORD_DAMAGE = 40
 
-
-# -------------------------- CLASSES --------------------------
+# -------------------------- Classes --------------------------
 
 class AfterImage:
     def __init__(self, pos, order, total):
@@ -65,6 +66,19 @@ class AfterImage:
         fade_factor = 1 - elapsed / AFTERIMAGE_LIFETIME
         return int(base_alpha * fade_factor)
 
+class SwordTrail:
+    def __init__(self, start_pos, end_pos, lifetime_ms=TRAIL_LIFETIME_MS):
+        self.start = start_pos
+        self.end = end_pos
+        self.created_at = pygame.time.get_ticks()
+        self.lifetime = lifetime_ms
+
+    def get_alpha(self):
+        elapsed = pygame.time.get_ticks() - self.created_at
+        if elapsed > self.lifetime:
+            return 0
+        return int(255 * (1 - elapsed / self.lifetime))
+
 class Player(pygame.sprite.Sprite):
     def __init__(self, x, y):
         super().__init__()
@@ -73,98 +87,211 @@ class Player(pygame.sprite.Sprite):
         self.image = pygame.Surface((PLAYER_SIZE, PLAYER_SIZE))
         self.image.fill((255, 255, 255))
         self.rect = self.image.get_rect(center=(x, y))
+        self.pos = pygame.Vector2(self.rect.center)  # float position
+
         self.speed = 3
 
         # Dash
         self.dash_cooldown = DASH_COOLDOWN
         self.last_dash = -DASH_COOLDOWN
-        self.dashing = False
-        self.dash_dir = pygame.Vector2(0, 0)
+        self.is_dashing = False
+        self.dash_dir = pygame.Vector2(0, -1)
+        self.dash_start_time = 0
         self.dash_progress = 0
         self.afterimages = []
+        self._next_afterimage_at = 0
 
         self.facing = pygame.Vector2(0, 1)
         self.dash_key_pressed = False
 
-        # Hit state
+        # Sword
+        self.swinging = False
+        self.swing_start_time = 0
+        self.swing_duration = PLAYER_SWING_DURATION_MS
+        self.swing_cooldown = PLAYER_SWING_COOLDOWN_MS
+        self.last_swing = -PLAYER_SWING_COOLDOWN_MS
+        self.locked_angle = 0.0  # angle at start of swing (radians)
+        self.sword_length = PLAYER_SWORD_LENGTH
+        self.sword_trails = []
+
+        # hit
         self.hit_flash = False
         self.hit_time = 0
+        self.death_time = None
 
-    def update(self, keys, bounds_rect):
-        dx, dy = 0, 0
+    def try_start_dash(self):
+        now = pygame.time.get_ticks()
+        if self.dead or self.is_dashing:
+            return
+        if (now - self.last_dash) < self.dash_cooldown:
+            return
+        # Use facing direction (set from movement) - if zero, default up
+        if self.facing.length_squared() == 0:
+            self.dash_dir = pygame.Vector2(0, -1)
+        else:
+            self.dash_dir = self.facing.normalize()
+        self.is_dashing = True
+        self.dash_start_time = now
+        self.last_dash = now
+        self._next_afterimage_at = now
+        self.afterimages.clear()
+        self.afterimages.append(AfterImage(self.pos, 1, DASH_FRAMES))
+        # cancel swing if any
+        self.swinging = False
+
+    def try_start_swing(self, aim_angle):
+        now = pygame.time.get_ticks()
+        if self.dead:
+            return
+        if self.is_dashing:
+            return
+        if (now - self.last_swing) >= self.swing_cooldown and not self.swinging:
+            self.swinging = True
+            self.swing_start_time = now
+            self.last_swing = now
+            self.locked_angle = aim_angle
+            # add initial trail point
+            tip = (self.pos.x + math.cos(self.locked_angle) * self.sword_length,
+                   self.pos.y + math.sin(self.locked_angle) * self.sword_length)
+            self.sword_trails.append(SwordTrail((self.pos.x, self.pos.y), tip))
+
+    def update_dash(self, dt_ms):
+        if not self.is_dashing:
+            return
+        now = pygame.time.get_ticks()
+        elapsed = now - self.dash_start_time
+        if elapsed <=  (DASH_FRAMES * (DASH_COOLDOWN // DASH_FRAMES)) or True:
+            # move per frame using DASH_SPEED pixels per frame (keeps behavior consistent)
+            self.pos += self.dash_dir * DASH_SPEED
+            self.rect.center = (int(self.pos.x), int(self.pos.y))
+            # spawn afterimages at simple intervals (frame-based)
+            if now >= self._next_afterimage_at and len(self.afterimages) < DASH_FRAMES:
+                self.afterimages.append(AfterImage(self.pos, len(self.afterimages) + 1, DASH_FRAMES))
+                self._next_afterimage_at = now + (DASH_COOLDOWN // max(1, DASH_FRAMES))
+        # End dash after fixed frames
+        self.dash_progress += 1
+        if self.dash_progress >= DASH_FRAMES:
+            self.is_dashing = False
+            self.dash_progress = 0
+            self.afterimages.clear()
+
+    def update(self, keys, bounds_rect, dt_ms):
         now = pygame.time.get_ticks()
 
-        # DASH
+        # dash input (LSHIFT starts dash)
         if keys[pygame.K_LSHIFT]:
-            if not self.dash_key_pressed and now - self.last_dash >= self.dash_cooldown:
-                self.start_dash()
+            # try to start dash on press edge
+            if not self.dash_key_pressed:
+                self.try_start_dash()
             self.dash_key_pressed = True
         else:
             self.dash_key_pressed = False
 
-        # MOVEMENT
-        if not self.dashing:
-            if keys[pygame.K_UP]:
-                dy = -self.speed
-                self.facing = pygame.Vector2(0, -1)
-            elif keys[pygame.K_DOWN]:
-                dy = self.speed
-                self.facing = pygame.Vector2(0, 1)
-            elif keys[pygame.K_LEFT]:
-                dx = -self.speed
-                self.facing = pygame.Vector2(-1, 0)
-            elif keys[pygame.K_RIGHT]:
-                dx = self.speed
-                self.facing = pygame.Vector2(1, 0)
+        # movement when not dashing
+        if not self.is_dashing and not self.swinging:
+            move_vec = pygame.Vector2(0, 0)
+            if keys[pygame.K_w]:
+                move_vec.y -= 1
+            if keys[pygame.K_s]:
+                move_vec.y += 1
+            if keys[pygame.K_a]:
+                move_vec.x -= 1
+            if keys[pygame.K_d]:
+                move_vec.x += 1
+            if move_vec.length_squared() > 0:
+                # prefer cardinal directions if both pressed (match prior behavior)
+                if abs(move_vec.x) > 0 and abs(move_vec.y) > 0:
+                    move_vec.y = 0
+                self.facing = move_vec.normalize()
+                self.pos += move_vec.normalize() * self.speed
+                self.rect.center = (int(self.pos.x), int(self.pos.y))
+                self.rect.clamp_ip(bounds_rect)
+                self.pos = pygame.Vector2(self.rect.center)
 
-            if dx != 0 and dy != 0:
-                dy = 0
-
-            self.rect.x += dx
-            self.rect.y += dy
-
-            # Clamp inside bounds
-            self.rect.left = max(self.rect.left, bounds_rect.left + BORDER_THICKNESS)
-            self.rect.right = min(self.rect.right, bounds_rect.right - BORDER_THICKNESS)
-            self.rect.top = max(self.rect.top, bounds_rect.top + BORDER_THICKNESS)
-            self.rect.bottom = min(self.rect.bottom, bounds_rect.bottom - BORDER_THICKNESS)
-
-        # DASH
-        if self.dashing:
-            self.rect.x += self.dash_dir.x * DASH_SPEED
-            self.rect.y += self.dash_dir.y * DASH_SPEED
-
-            # Clamp inside bounds
-            self.rect.left = max(self.rect.left, bounds_rect.left + BORDER_THICKNESS)
-            self.rect.right = min(self.rect.right, bounds_rect.right - BORDER_THICKNESS)
-            self.rect.top = max(self.rect.top, bounds_rect.top + BORDER_THICKNESS)
-            self.rect.bottom = min(self.rect.bottom, bounds_rect.bottom - BORDER_THICKNESS)
-
+        # dash update (frame-based)
+        if self.is_dashing:
+            # move by dash speed
+            self.pos += self.dash_dir * DASH_SPEED
+            self.rect.center = (int(self.pos.x), int(self.pos.y))
+            self.rect.clamp_ip(bounds_rect)
+            # afterimage spawn
+            if now >= self._next_afterimage_at and len(self.afterimages) < DASH_FRAMES:
+                self.afterimages.append(AfterImage(self.pos, len(self.afterimages) + 1, DASH_FRAMES))
+                self._next_afterimage_at = now + max(1, int(self.swing_duration / max(1, DASH_FRAMES)))
+            # simple frame-limit for dash (DASH_FRAMES increments)
             self.dash_progress += 1
-            if self.dash_progress in (1, 2, 3):
-                self.afterimages.append(AfterImage(self.rect.center, self.dash_progress, DASH_FRAMES))
             if self.dash_progress >= DASH_FRAMES:
-                self.dashing = False
+                self.is_dashing = False
                 self.dash_progress = 0
-                self.last_dash = now
+                self.afterimages.clear()
 
-    def start_dash(self):
-        self.dashing = True
-        self.dash_dir = self.facing.copy()
-        self.dash_progress = 0
+        # Swing update (creates sweeping arc + trails)
+        if self.swinging:
+            elapsed = now - self.swing_start_time
+            if elapsed >= self.swing_duration:
+                self.swinging = False
+            else:
+                t = elapsed / self.swing_duration  # 0..1
+                arc = math.radians(100)  # total sweep angle
+                offset = -arc / 2 + arc * t
+                sword_angle = self.locked_angle + offset
+                start = (self.pos.x, self.pos.y)
+                tip = (start[0] + math.cos(sword_angle) * self.sword_length,
+                       start[1] + math.sin(sword_angle) * self.sword_length)
+                self.sword_trails.append(SwordTrail(start, tip))
+                if len(self.sword_trails) > TRAIL_MAX_POINTS:
+                    self.sword_trails.pop(0)
 
-class SwordTrail:
-    def __init__(self, start_pos, end_pos, lifetime=150):
-        self.start = start_pos
-        self.end = end_pos
-        self.created_at = pygame.time.get_ticks()
-        self.lifetime = lifetime
+    def draw(self, surface, scale_x=1, scale_y=1):
+        # draw afterimages
+        for afterimage in self.afterimages[:]:
+            alpha = afterimage.get_alpha()
+            if alpha <= 0:
+                try: self.afterimages.remove(afterimage)
+                except ValueError: pass
+                continue
+            surf = pygame.Surface((PLAYER_SIZE * scale_x, PLAYER_SIZE * scale_y), pygame.SRCALPHA)
+            surf.fill((255, 255, 255, alpha))
+            pos = (afterimage.pos[0] * scale_x, afterimage.pos[1] * scale_y)
+            surface.blit(surf, (pos[0] - PLAYER_SIZE * scale_x / 2, pos[1] - PLAYER_SIZE * scale_y / 2))
 
-    def get_alpha(self):
-        elapsed = pygame.time.get_ticks() - self.created_at
-        if elapsed > self.lifetime:
-            return 0
-        return int(255 * (1 - elapsed / self.lifetime))
+        # draw player
+        scaled_rect = pygame.Rect(self.rect.x * scale_x, self.rect.y * scale_y,
+                                  PLAYER_SIZE * scale_x, PLAYER_SIZE * scale_y)
+        pygame.draw.rect(surface, (255, 255, 255), scaled_rect)
+
+        # draw current sword arc (if swinging) as a single thicker white arc line
+        now = pygame.time.get_ticks()
+        if self.swinging:
+            elapsed = now - self.swing_start_time
+            t = elapsed / self.swing_duration if self.swing_duration else 1.0
+            arc = math.radians(100)
+            offset = -arc / 2 + arc * t
+            sword_angle = self.locked_angle + offset
+            start = (self.rect.centerx * scale_x, self.rect.centery * scale_y)
+            tip = (start[0] + math.cos(sword_angle) * self.sword_length * scale_x,
+                   start[1] + math.sin(sword_angle) * self.sword_length * scale_y)
+            pygame.draw.line(surface, (255, 255, 255), start, tip, 4)
+
+        # draw sword trails
+        for trail in list(self.sword_trails):
+            alpha = trail.get_alpha()
+            if alpha <= 0:
+                try: self.sword_trails.remove(trail)
+                except ValueError: pass
+                continue
+            sx, sy = trail.start
+            ex, ey = trail.end
+            # scale coordinates
+            sx *= scale_x; sy *= scale_y; ex *= scale_x; ey *= scale_y
+            # draw trail segment
+            surf = pygame.Surface((abs(int(ex - sx)) + 6, abs(int(ey - sy)) + 6), pygame.SRCALPHA)
+            pygame.draw.line(surf, (255, 255, 255, alpha), ( (0 if ex>=sx else abs(int(ex-sx))), (0 if ey>=sy else abs(int(ey-sy))) ), ( (abs(int(ex - sx)) if ex>=sx else 0), (abs(int(ey - sy)) if ey>=sy else 0) ), 3)
+            # blit at min point
+            min_x = int(min(sx, ex)) - 2
+            min_y = int(min(sy, ey)) - 2
+            surface.blit(surf, (min_x, min_y))
+
 
 class Knight(pygame.sprite.Sprite):
     def __init__(self, x, y, target, bounds_rect, all_knights):
@@ -173,21 +300,22 @@ class Knight(pygame.sprite.Sprite):
         self.image = pygame.Surface((PLAYER_SIZE, PLAYER_SIZE))
         self.image.fill((200, 50, 50))
         self.rect = self.image.get_rect(center=(x, y))
+        self.pos = pygame.Vector2(self.rect.center)
         self.speed = 3.75
         self.target = target
         self.bounds_rect = bounds_rect
         self.all_knights = all_knights
+        self.health = 60
+        self.hit_flash = False
+        self.hit_time = 0
 
-        # Sword
-        self.sword_length = 80
-        self.swinging = False
-        self.swing_cooldown = 1000
-        self.last_swing = -1000
-        self.swing_duration = 150
-        self.swing_start_time = None
-        self.sword_trails = []
-
+        # Attack
         self.attack_range = 60
+        self.last_attack = -1000
+        self.attack_cooldown = 1000
+
+        # Sword trails (for enemy swings) kept minimal here
+        self.sword_trails = []
 
     def update(self):
         now = pygame.time.get_ticks()
@@ -195,132 +323,60 @@ class Knight(pygame.sprite.Sprite):
         dy = self.target.rect.centery - self.rect.centery
         distance = math.hypot(dx, dy)
 
-        if self.swinging:
-            # Sword swinging logic
-            elapsed = now - self.swing_start_time
-            if elapsed > self.swing_duration:
-                self.swinging = False
-            else:
-                t = elapsed / self.swing_duration
-                angle_offset = math.radians(90) * (t - 0.5)
-                base_angle = math.atan2(dy, dx)
-                sword_angle = base_angle + angle_offset
-                start_pos = self.rect.center
-                end_pos = (start_pos[0] + math.cos(sword_angle) * self.sword_length,
-                           start_pos[1] + math.sin(sword_angle) * self.sword_length)
-                self.sword_trails.append(SwordTrail(start_pos, end_pos))
-                player_rect = self.target.rect
-                line_rect = pygame.Rect(min(start_pos[0], end_pos[0]),
-                                        min(start_pos[1], end_pos[1]),
-                                        abs(end_pos[0]-start_pos[0])+1,
-                                        abs(end_pos[1]-start_pos[1])+1)
-                if line_rect.colliderect(player_rect):
-                    if not self.target.hit_flash:
-                        self.target.hit_flash = True
-                        self.target.hit_time = now
-                        self.target.health -= KNIGHT_DAMAGE
-                        if self.target.health < 0:
-                            self.target.health = 0
-            return  # don't move while swinging
-
-        # Start swing if in range
-        if distance <= self.attack_range and now - self.last_swing >= self.swing_cooldown:
-            self.swinging = True
-            self.swing_start_time = now
-            self.last_swing = now
+        # Swing if in range
+        if distance <= self.attack_range and (now - self.last_attack) >= self.attack_cooldown:
+            # perform a simple attack (instant damage) and cooldown
+            if not self.target.hit_flash:
+                self.target.hit_flash = True
+                self.target.hit_time = now
+                self.target.health -= KNIGHT_DAMAGE
+                if self.target.health <= 0:
+                    self.target.health = 0
+                    self.target.dead = True
+            self.last_attack = now
             return
 
-        # --- Movement toward player ---
+        # Movement towards player with avoidance
         if distance > 0:
             to_player = pygame.Vector2(dx, dy).normalize()
         else:
             to_player = pygame.Vector2(0, 0)
 
-        # --- Avoidance + detour movement ---
         avoidance = pygame.Vector2(0, 0)
         for other in self.all_knights:
-            if other == self:
+            if other is self:
+                continue
+            if not hasattr(other, "rect"):
                 continue
             offset = pygame.Vector2(self.rect.center) - pygame.Vector2(other.rect.center)
-            dist = offset.length()
-            if 0 < dist < PLAYER_SIZE * 1.5:
-                # Push away from nearby knights
+            d = offset.length()
+            if 0 < d < PLAYER_SIZE * 1.5:
                 offset.normalize_ip()
-                avoidance += offset * ((PLAYER_SIZE * 1.5 - dist) / (PLAYER_SIZE * 1.5))
+                avoidance += offset * ((PLAYER_SIZE * 1.5 - d) / (PLAYER_SIZE * 1.5))
 
-                # If directly ahead, curve sideways slightly
-                forward_dot = to_player.dot(offset)
-                if forward_dot < -0.3:  # knight ahead
-                    perp = pygame.Vector2(-to_player.y, to_player.x)
-                    avoidance += perp * random.choice([-1, 1]) * 0.3
-
-        # Combine movement forces
         move_dir = to_player + avoidance
         if move_dir.length() > 0:
             move_dir.normalize_ip()
-            
+            self.pos += move_dir * (self.speed * (1.0 / (FPS/60)))  # frame-rate friendly-ish
+            self.rect.center = (int(self.pos.x), int(self.pos.y))
+            self.rect.clamp_ip(self.bounds_rect)
+            self.pos = pygame.Vector2(self.rect.center)
 
-            
-            move = move_dir * self.speed
-            # --- CROWD SLOWDOWN ---
-            nearby_count = 0
-            for other in self.all_knights:
-                if other == self:
-                    continue
-                if self.rect.centerx - PLAYER_SIZE*2 < other.rect.centerx < self.rect.centerx + PLAYER_SIZE*2 and \
-                self.rect.centery - PLAYER_SIZE*2 < other.rect.centery < self.rect.centery + PLAYER_SIZE*2:
-                    nearby_count += 1
-            crowd_factor = max(0.5, 1 - 0.1 * nearby_count)  # slows more with density
-            move = move_dir * self.speed * crowd_factor
-
-            self.rect.x += move.x
-            self.rect.y += move.y
-
-        # --- Keep inside bounds ---
-        if self.rect.left < self.bounds_rect.left + BORDER_THICKNESS:
-            self.rect.left = self.bounds_rect.left + BORDER_THICKNESS
-        if self.rect.right > self.bounds_rect.right - BORDER_THICKNESS:
-            self.rect.right = self.bounds_rect.right - BORDER_THICKNESS
-        if self.rect.top < self.bounds_rect.top + BORDER_THICKNESS:
-            self.rect.top = self.bounds_rect.top + BORDER_THICKNESS
-        if self.rect.bottom > self.bounds_rect.bottom - BORDER_THICKNESS:
-            self.rect.bottom = self.bounds_rect.bottom - BORDER_THICKNESS
-
-
+    def take_damage(self, amount):
+        self.health -= amount
+        self.hit_flash = True
+        self.hit_time = pygame.time.get_ticks()
 
     def draw(self, surface, scale_x=1, scale_y=1):
-        scaled_rect = pygame.Rect(
-            self.rect.x * scale_x, self.rect.y * scale_y,
-            PLAYER_SIZE * scale_x, PLAYER_SIZE * scale_y
-        )
-        pygame.draw.rect(surface, (200, 50, 50), scaled_rect)
+        color = (255, 120, 120) if self.hit_flash else (200, 50, 50)
+        rect = pygame.Rect(self.rect.x * scale_x, self.rect.y * scale_y,
+                           PLAYER_SIZE * scale_x, PLAYER_SIZE * scale_y)
+        pygame.draw.rect(surface, color, rect)
+        # clear hit flash after short time
+        if self.hit_flash and (pygame.time.get_ticks() - self.hit_time) > HIT_FLASH_DURATION:
+            self.hit_flash = False
 
-        if self.swinging:
-            elapsed = pygame.time.get_ticks() - self.swing_start_time
-            t = elapsed / self.swing_duration
-            dx = self.target.rect.centerx - self.rect.centerx
-            dy = self.target.rect.centery - self.rect.centery
-            base_angle = math.atan2(dy, dx)
-            angle_offset = math.radians(90) * (t - 0.5)
-            sword_angle = base_angle + angle_offset
-            start = (self.rect.centerx * scale_x, self.rect.centery * scale_y)
-            end = (start[0] + math.cos(sword_angle) * self.sword_length * scale_x,
-                   start[1] + math.sin(sword_angle) * self.sword_length * scale_y)
-            pygame.draw.line(surface, (255, 255, 255), start, end, 4)
-
-        for trail in self.sword_trails[:]:
-            alpha = trail.get_alpha()
-            if alpha <= 0:
-                self.sword_trails.remove(trail)
-                continue
-            sx = trail.start[0] * scale_x
-            sy = trail.start[1] * scale_y
-            ex = trail.end[0] * scale_x
-            ey = trail.end[1] * scale_y
-            pygame.draw.line(surface, (255, 255, 255, alpha), (sx, sy), (ex, ey), 4)
-
-
-# -------------------------- GAME --------------------------
+# -------------------------- Game --------------------------
 
 class Game:
     def __init__(self):
@@ -334,229 +390,208 @@ class Game:
         self.virtual_height = V_HEIGHT
         self.window_width, self.window_height = V_WIDTH, V_HEIGHT
 
-        self.menu_button_rect = pygame.Rect(self.window_width//2 - 60, self.window_height//2 + 100, 120, 40)
-        self.show_menu_button = False
-
-        self.death_fade_start = None
-        self.show_retry = False
-        self.retry_button_rect = pygame.Rect(self.window_width//2 - 60, self.window_height//2 + 50, 120, 40)
-
         self.bounds_rect = pygame.Rect(0, 0, self.virtual_width, self.virtual_height)
         self.player = Player(self.virtual_width // 2, self.virtual_height // 2)
-        self.all_sprites = pygame.sprite.Group(self.player)
 
-        self.knights = pygame.sprite.Group()
-        # Pass reference to all_knights to each Knight
-        for pos in [(0, 0), (0, self.virtual_height), (self.virtual_width, 0)]:
-            knight = Knight(pos[0], pos[1], self.player, self.bounds_rect, self.knights)
-            self.knights.add(knight)
+        # spawn knights in corners
+        self.knights = []
+        spawn_positions = [(40, 40), (self.virtual_width - 40, 40),
+                           (40, self.virtual_height - 40), (self.virtual_width - 40, self.virtual_height - 40)]
+        for pos in spawn_positions:
+            k = Knight(pos[0], pos[1], self.player, self.bounds_rect, self.knights)
+            self.knights.append(k)
 
         self.color_index = random.randrange(len(NEON_COLORS))
         self.border_color, self.floor_color = NEON_COLORS[self.color_index]
-
         self.last_color_change = pygame.time.get_ticks()
         self.color_interval = 3000
-
-        # Pulse effect
         self.pulse_start = None
         self.pulse_color = tuple(min(255, c + 100) for c in self.border_color)
+        self.death_fade_start = None
+        self.show_retry = False   
 
-    def change_color(self):
-        possible_indices = [i for i in range(len(NEON_COLORS)) if i != self.color_index]
-        new_index = random.choice(possible_indices)
-        self.color_index = new_index
-        self.border_color, self.floor_color = NEON_COLORS[new_index]
-        self.pulse_start = pygame.time.get_ticks()
-        self.pulse_color = tuple(min(255, c + 100) for c in self.border_color)
-
-    def run(self):
-        while self.running:
-            dt = self.clock.tick(FPS)
-            self.handle_events()
-            self.update(dt)
-            self.draw()
-        pygame.quit()
-        sys.exit()
-
+    # ---------------- Handle Events ----------------
     def handle_events(self):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.running = False
+
             elif event.type == pygame.VIDEORESIZE:
                 self.window_width, self.window_height = event.w, event.h
                 self.screen = pygame.display.set_mode((self.window_width, self.window_height), pygame.RESIZABLE)
-            elif self.player.dead:
-                # --- Keyboard navigation for Undertale-style menu ---
+
+            # If death menu active, handle its keys / mouse first, and ignore game inputs
+            if self.show_retry:
                 if event.type == pygame.KEYDOWN:
-                    if event.key in [pygame.K_UP, pygame.K_w]:
-                        self.heart_index = (self.heart_index - 1) % 2
-                    elif event.key in [pygame.K_DOWN, pygame.K_s]:
-                        self.heart_index = (self.heart_index + 1) % 2
-                    elif event.key in [pygame.K_RETURN, pygame.K_SPACE]:
-                        _, label = self.button_rects[self.heart_index]
-                        if label == "Retry":
-                            self.reset_game()
-                        elif label == "Menu":
-                            pygame.mixer.stop()
-                            spiritbound_title.main_menu()
-                            self.running = False
-                            return
-
+                    if event.key == pygame.K_r:  # Respawn
+                        self.reset_game()
+                        self.show_retry = False
+                        return
+                    elif event.key == pygame.K_m:  # Menu
+                        import spiritbound_title
+                        pygame.mixer.stop()
+                        self.running = False
+                        pygame.display.quit()
+                        spiritbound_title.main_menu()
+                        return
                 elif event.type == pygame.MOUSEBUTTONDOWN:
-                    for rect, label in getattr(self, "button_rects", []):
-                        if rect.collidepoint(event.pos):
-                            if label == "Retry":
-                                self.reset_game()
-                            elif label == "Menu":
-                                import spiritbound_title
-                                pygame.mixer.stop()
-                                spiritbound_title.main_menu()
-                                self.running = False
-                                return
+                    # optional: allow clicking text/buttons if you later add rects
+                    pass
+                # While death menu shown, skip the rest of input processing
+                continue
 
+            # --- Normal game inputs when not in death menu ---
+            elif event.type == pygame.KEYDOWN:
+                # allow dash to start also on keydown
+                if event.key == pygame.K_LSHIFT:
+                    self.player.try_start_dash()
 
-    def reset_game(self):
-        # Reset player
-        self.player.health = PLAYER_MAX_HEALTH
-        self.player.dead = False
-        self.show_retry = False
-        self.player.rect.center = (self.virtual_width // 2, self.virtual_height // 2)
-        self.player.afterimages.clear()
-        self.death_fade_start = None
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                if event.button == 1:  # left click -> swing toward mouse
+                    mx, my = pygame.mouse.get_pos()
+                    # convert mouse coords to virtual coords (no scaling implemented here so same)
+                    aim_angle = math.atan2(my - self.player.rect.centery, mx - self.player.rect.centerx)
+                    self.player.try_start_swing(aim_angle)
 
-        # Reset knights
-        for knight in self.knights:
-            knight.rect.center = knight.start_pos.xy
-            knight.swinging = False
-            knight.sword_trails.clear()
-            knight.last_swing = -1000
-
+    # ---------------- Update ----------------
     def update(self, dt):
         keys = pygame.key.get_pressed()
-        self.player.update(keys, self.bounds_rect)
-        if self.player.health <= 0 and not self.player.dead:
-            self.player.dead = True
-            self.death_fade_start = pygame.time.get_ticks()
+        # update player (movement, dash, swing)
+        self.player.update(keys, self.bounds_rect, dt)
 
-        for knight in self.knights:
-            knight.update()
+        # Sword hitting knights: compute tip each frame during active swing and damage once per knight per swing
+        now = pygame.time.get_ticks()
+        if self.player.swinging:
+            elapsed = now - self.player.swing_start_time
+            t = elapsed / max(1, self.player.swing_duration)
+            arc = math.radians(100)
+            offset = -arc / 2 + arc * t
+            sword_angle = self.player.locked_angle + offset
+            tip = pygame.Vector2(self.player.pos.x + math.cos(sword_angle) * self.player.sword_length,
+                                 self.player.pos.y + math.sin(sword_angle) * self.player.sword_length)
+            for knight in list(self.knights):
+                if knight.rect.center:  # sanity
+                    kx, ky = knight.rect.center
+                    if math.hypot(kx - tip.x, ky - tip.y) <= PLAYER_SWORD_HIT_RADIUS:
+                        # apply damage and remove or mark
+                        knight.take_damage(SWORD_DAMAGE)
+                        if knight.health <= 0:
+                            try:
+                                self.knights.remove(knight)
+                            except ValueError:
+                                pass
 
+        # update knights
+        for k in self.knights:
+            k.update()
+            if len(self.knights) < 4:
+                spawn_positions = [(40, 40), (self.virtual_width - 40, 40),
+                                (40, self.virtual_height - 40), (self.virtual_width - 40, self.virtual_height - 40)]
+                while len(self.knights) < 4:
+                    pos = random.choice(spawn_positions)
+                    k = Knight(pos[0], pos[1], self.player, self.bounds_rect, self.knights)
+                    self.knights.append(k)
+
+        # handle player death
+        if self.player.dead:
+            if self.death_fade_start is None:
+                # Start the fade timer
+                self.death_fade_start = pygame.time.get_ticks()
+            else:
+                # Check how long it's been since death
+                elapsed = pygame.time.get_ticks() - self.death_fade_start
+                if elapsed > DEATH_FADE_DURATION:
+                    self.show_retry = True
+            return
+
+        # color change
         now = pygame.time.get_ticks()
         if now - self.last_color_change > self.color_interval:
-            self.change_color()
+            indices = [i for i in range(len(NEON_COLORS)) if i != self.color_index]
+            self.color_index = random.choice(indices)
+            self.border_color, self.floor_color = NEON_COLORS[self.color_index]
+            self.pulse_start = now
+            self.pulse_color = tuple(min(255, c + 100) for c in self.border_color)
             self.last_color_change = now
+    def show_death_menu(self):
+        """Display simple death screen with Respawn/Menu options."""
+        import spiritbound_title  # import here to avoid circular imports
+        font = pygame.font.SysFont(None, 48)
+        small_font = pygame.font.SysFont(None, 32)
 
-    def draw_undertale_death_menu(self):
-        """Draws Undertale-style death menu with a red heart selector."""
-        surface = self.screen
-        WIDTH, HEIGHT = self.window_width, self.window_height
+        while True:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pygame.quit()
+                    sys.exit()
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_r:  # Respawn
+                        self.reset_game()
+                        return
+                    elif event.key == pygame.K_m:  # Return to main menu
+                        pygame.mixer.stop()
+                        self.running = False
+                        pygame.display.quit()
+                        spiritbound_title.main_menu()
+                        return
 
-        # --- Faded gray overlay ---
-        gray_overlay = pygame.Surface((WIDTH, HEIGHT))
-        gray_overlay.fill((20, 20, 20))
-        gray_overlay.set_alpha(200)
-        surface.blit(gray_overlay, (0, 0))
+            # draw the death screen
+            self.screen.fill((0, 0, 0))
+            text = font.render("You Died", True, (255, 50, 50))
+            respawn_text = small_font.render("[R] Respawn", True, (255, 255, 255))
+            menu_text = small_font.render("[M] Menu", True, (200, 200, 200))
 
-        # --- Title text ---
-        title_font = pygame.font.Font(None, 72)
-        title_text = title_font.render("YOU DIED", True, (220, 40, 40))
-        title_rect = title_text.get_rect(center=(WIDTH // 2, HEIGHT // 3))
-        surface.blit(title_text, title_rect)
+            self.screen.blit(text, (self.window_width // 2 - text.get_width() // 2,
+                                    self.window_height // 2 - 100))
+            self.screen.blit(respawn_text, (self.window_width // 2 - respawn_text.get_width() // 2,
+                                            self.window_height // 2))
+            self.screen.blit(menu_text, (self.window_width // 2 - menu_text.get_width() // 2,
+                                         self.window_height // 2 + 40))
 
-        # --- Button setup ---
-        button_font = pygame.font.Font(None, 48)
-        options = ["Retry", "Menu"]
-        spacing = 80
-        start_y = HEIGHT // 2
-        self.button_rects = []
+            pygame.display.flip()
+            self.clock.tick(30)
 
-        for i, label in enumerate(options):
-            y = start_y + i * spacing
-            rect = pygame.Rect(WIDTH // 2 - 100, y, 200, 50)
-            self.button_rects.append((rect, label))
-
-            hovered = rect.collidepoint(pygame.mouse.get_pos())
-            border_color = (255, 255, 255) if not hovered else (255, 60, 60)
-            pygame.draw.rect(surface, border_color, rect, 2)
-
-            text_color = (255, 255, 255) if not hovered else (255, 80, 80)
-            text = button_font.render(label, True, text_color)
-            text_rect = text.get_rect(center=rect.center)
-            surface.blit(text, text_rect)
-
-        # --- Heart selector (Undertale style) ---
-        self.heart_index = getattr(self, "heart_index", 0)
-        heart_y = start_y + self.heart_index * spacing + 25
-        pygame.draw.polygon(
-            surface,
-            (255, 0, 0),
-            [
-                (WIDTH // 2 - 130, heart_y - 10),
-                (WIDTH // 2 - 122, heart_y),
-                (WIDTH // 2 - 130, heart_y + 10)
-            ]
-        )
-
+    # ---------------- Draw ----------------
     def draw(self):
+        if self.death_fade_start is None:
+            self.death_fade_start = 0 
+
         scale_x = self.window_width / self.virtual_width
         scale_y = self.window_height / self.virtual_height
 
-        # Shake offset if player hit
-        offset_x = offset_y = 0
-        if self.player.hit_flash:
-            elapsed = pygame.time.get_ticks() - self.player.hit_time
-            if elapsed < HIT_FLASH_DURATION:
-                offset_x = random.randint(-HIT_SHAKE_INTENSITY, HIT_SHAKE_INTENSITY)
-                offset_y = random.randint(-HIT_SHAKE_INTENSITY, HIT_SHAKE_INTENSITY)
-            else:
-                self.player.hit_flash = False
-
-        # Floor
+        # background
         self.screen.fill(self.floor_color)
-
-        # Neon boundary
         pygame.draw.rect(self.screen, self.border_color,
-                        pygame.Rect(offset_x, offset_y, self.window_width, self.window_height),
-                        BORDER_THICKNESS)
+                         pygame.Rect(0, 0, self.window_width, self.window_height), BORDER_THICKNESS)
 
-        # --- Afterimages ---
-        afterimage_surf = pygame.Surface((PLAYER_SIZE * scale_x, PLAYER_SIZE * scale_y), pygame.SRCALPHA)
-        for afterimage in self.player.afterimages[:]:
-            alpha = afterimage.get_alpha()
+        # afterimages
+        for a in self.player.afterimages[:]:
+            alpha = a.get_alpha()
             if alpha <= 0:
-                self.player.afterimages.remove(afterimage)
+                try: self.player.afterimages.remove(a)
+                except ValueError: pass
                 continue
-            afterimage_surf.fill((255, 255, 255, alpha))
-            pos = (afterimage.pos[0] * scale_x + offset_x, afterimage.pos[1] * scale_y + offset_y)
-            self.screen.blit(afterimage_surf, (pos[0] - PLAYER_SIZE * scale_x / 2, pos[1] - PLAYER_SIZE * scale_y / 2))
+            surf = pygame.Surface((PLAYER_SIZE * scale_x, PLAYER_SIZE * scale_y), pygame.SRCALPHA)
+            surf.fill((255, 255, 255, alpha))
+            pos = (a.pos[0] * scale_x - PLAYER_SIZE * scale_x / 2,
+                   a.pos[1] * scale_y - PLAYER_SIZE * scale_y / 2)
+            self.screen.blit(surf, pos)
 
-        # --- Health bar ---
-        bar_width = 200
-        bar_height = 20
-        health_percent = self.player.health / PLAYER_MAX_HEALTH
-        bar_color = (
-            int(255 * (1 - health_percent)),
-            int(255 * health_percent),
-            0
-        )
-        bar_rect = pygame.Rect(10, 10, int(bar_width * health_percent), bar_height)
+        # health bar
+        hp_percent = max(0, min(1, self.player.health / PLAYER_MAX_HEALTH))
+        bar_rect = pygame.Rect(10, 10, int(200 * hp_percent), 20)
+        bar_color = (int(255 * (1 - hp_percent)), int(255 * hp_percent), 0)
         pygame.draw.rect(self.screen, bar_color, bar_rect)
-        pygame.draw.rect(self.screen, (255, 255, 255), (10, 10, bar_width, bar_height), 2)
+        pygame.draw.rect(self.screen, (255, 255, 255), (10, 10, 200, 20), 2)
 
-        # --- Player ---
-        scaled_rect = pygame.Rect(
-            self.player.rect.x * scale_x + offset_x,
-            self.player.rect.y * scale_y + offset_y,
-            PLAYER_SIZE * scale_x,
-            PLAYER_SIZE * scale_y
-        )
-        pygame.draw.rect(self.screen, (255, 255, 255), scaled_rect)
+        # player (and sword)
+        self.player.draw(self.screen, scale_x, scale_y)
 
-        # --- Knights ---
-        for knight in self.knights:
-            knight.draw(self.screen, scale_x, scale_y)
+        # knights
+        for k in self.knights:
+            k.draw(self.screen, scale_x, scale_y)
 
-        # --- Neon pulse overlay ---
+        # pulse overlay
         if self.pulse_start:
             elapsed = pygame.time.get_ticks() - self.pulse_start
             if elapsed < PULSE_DURATION:
@@ -567,7 +602,7 @@ class Game:
             else:
                 self.pulse_start = None
 
-        # --- Red flash when hit ---
+        # hit flash overlay (player)
         if self.player.hit_flash:
             elapsed = pygame.time.get_ticks() - self.player.hit_time
             if elapsed < HIT_FLASH_DURATION:
@@ -575,57 +610,56 @@ class Game:
                 overlay = pygame.Surface((self.window_width, self.window_height), pygame.SRCALPHA)
                 overlay.fill((255, 0, 0, alpha))
                 self.screen.blit(overlay, (0, 0))
+            else:
+                self.player.hit_flash = False
 
-        # --- Death fade + progressive blocky grayscale + ripple ---
-        if self.player.dead:
+        # death fade
+        if self.player.dead and self.death_fade_start is not None:
             elapsed = pygame.time.get_ticks() - self.death_fade_start
-            progress = min(1, elapsed / DEATH_FADE_DURATION)
-
-            block_size = 16
-            # Determine how far the grayscale wave has reached
-            max_wave_radius = math.hypot(self.window_width, self.window_height) / 2
-            current_wave_radius = progress * max_wave_radius
-            center_x, center_y = self.window_width // 2, self.window_height // 2
-
-            for y in range(0, self.window_height, block_size):
-                for x in range(0, self.window_width, block_size):
-                    # distance from center to block
-                    dist = math.hypot(x - center_x, y - center_y)
-                    if dist <= current_wave_radius:
-                        color = self.screen.get_at((x, y))
-                        gray = int(0.3 * color.r + 0.59 * color.g + 0.11 * color.b)
-                        r = int(color.r * (1 - progress) + gray * progress)
-                        g = int(color.g * (1 - progress) + gray * progress)
-                        b = int(color.b * (1 - progress) + gray * progress)
-                        pygame.draw.rect(self.screen, (r, g, b),
-                                        pygame.Rect(x, y, block_size, block_size))
-
-            # Ripple effect
-            ripple_progress = progress
-            for i in range(RIPPLE_WAVES):
-                radius = int(ripple_progress * (self.window_width + self.window_height) / 3 + i * 20)
-                ripple_alpha = max(0, 150 - i * 30)
-                ripple_color = (*self.border_color, ripple_alpha)
-                ripple_surface = pygame.Surface((self.window_width, self.window_height), pygame.SRCALPHA)
-                pygame.draw.circle(ripple_surface, ripple_color, (center_x, center_y), radius, 4)
-                self.screen.blit(ripple_surface, (0, 0))
-
-            # Black fade overlay
+            progress = min(1.0, elapsed / DEATH_FADE_DURATION)
             fade_alpha = min(255, int(255 * progress))
             overlay = pygame.Surface((self.window_width, self.window_height))
             overlay.fill((0, 0, 0))
             overlay.set_alpha(fade_alpha)
             self.screen.blit(overlay, (0, 0))
 
-            if elapsed >= DEATH_FADE_DURATION:
-                self.show_retry = True
-                self.show_menu_button = True
-                self.draw_undertale_death_menu()
+        # If fade completed, draw the death menu overlay UI (non-blocking)
+        if self.show_retry:
+            font = pygame.font.SysFont(None, 72)
+            small_font = pygame.font.SysFont(None, 36)
+            title = font.render("YOU DIED", True, (220, 40, 40))
+            respawn = small_font.render("[R] Respawn", True, (255, 255, 255))
+            menu_txt = small_font.render("[M] Menu", True, (200, 200, 200))
 
+            cx = self.window_width // 2
+            cy = self.window_height // 2
+            self.screen.blit(title, (cx - title.get_width() // 2, cy - 100))
+            self.screen.blit(respawn, (cx - respawn.get_width() // 2, cy))
+            self.screen.blit(menu_txt, (cx - menu_txt.get_width() // 2, cy + 48))
 
         pygame.display.flip()
+    def reset_game(self):
+        """Resets player and enemies after death."""
+        self.player = Player(self.virtual_width // 2, self.virtual_height // 2)
+        self.knights.clear()
+        spawn_positions = [(40, 40), (self.virtual_width - 40, 40),
+                           (40, self.virtual_height - 40), (self.virtual_width - 40, self.virtual_height - 40)]
+        for pos in spawn_positions:
+            k = Knight(pos[0], pos[1], self.player, self.bounds_rect, self.knights)
+            self.knights.append(k)
+        self.death_fade_start = None
+        self.show_retry = False
+    # ---------------- Run ----------------
+    def run(self):
+        while self.running:
+            dt = self.clock.tick(FPS)
+            self.handle_events()
+            self.update(dt)
+            self.draw()
+        pygame.quit()
+        sys.exit()
 
-# -------------------------- RUN --------------------------
 
+# ---------------- Run Game ----------------
 if __name__ == "__main__":
     Game().run()
