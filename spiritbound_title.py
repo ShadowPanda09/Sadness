@@ -4,7 +4,48 @@ import math
 import random
 import os
 import spiritbound_game
+from ffpyplayer.player import MediaPlayer
 
+def play_video_overlay(filename, screen):
+    """
+    Play video on top of existing pygame screen.
+    Stops background music while playing.
+    """
+    video_path = os.path.join(os.path.dirname(__file__), "assets", filename)
+
+    # Pause background music
+    if pygame.mixer.music.get_busy():
+        pygame.mixer.music.pause()
+
+    clock = pygame.time.Clock()
+    player = MediaPlayer(video_path)
+
+    running = True
+    while running:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+                player.close_player()
+
+        frame, val = player.get_frame()
+        if val == 'eof':
+            break
+        if frame is not None:
+            image, pts = frame
+            img_surface = pygame.image.frombuffer(
+                image.to_bytearray()[0], image.get_size(), 'RGB'
+            )
+            img_surface = pygame.transform.scale(img_surface, screen.get_size())
+            screen.blit(img_surface, (0, 0))
+            pygame.display.flip()
+
+        clock.tick(30)
+
+    player.close_player()
+
+    # Resume background music
+    if not pygame.mixer.music.get_busy():
+        pygame.mixer.music.unpause()
 # -------------------------- Constants --------------------------
 WIDTH, HEIGHT = 640, 480
 
@@ -204,7 +245,7 @@ def main_menu():
                     elif choice == "Credits":
                         show_credits()
                     elif choice == "Settings":
-                        print("Settings not implemented yet.")
+                            play_video_overlay("HELP!.mp4", screen)
                     elif choice == "Play":
                         pygame.mixer.music.fadeout(1500)
                         pygame.time.delay(1500)
