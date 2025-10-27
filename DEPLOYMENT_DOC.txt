@@ -1,0 +1,136 @@
+My Game 🎮
+
+A fun Pygame project! Follow these steps to download, install, and play.
+
+Table of Contents
+
+Prerequisites
+
+Installation
+
+Running the Game
+
+Platform-Specific Instructions
+
+Optional: Standalone Executable
+
+Assets
+
+Support
+
+Prerequisites
+
+Python 3.10+
+Download from python.org
+.
+
+pip (comes with Python, for installing packages).
+
+Installation
+
+Clone or download the repository
+
+git clone https://github.com/yourusername/my_game.git
+cd my_game
+
+
+Or download the ZIP from GitHub and extract it.
+
+Install dependencies
+
+pip install -r requirements.txt
+
+
+This will install Pygame and any other required libraries.
+
+Running the Game
+
+Run the main Python script:
+
+python main.py
+
+
+Make sure your terminal or command prompt is in the project directory.
+
+Platform-Specific Instructions
+Windows
+
+Open File Explorer, go to the project folder.
+
+Double-click main.py (make sure .py files are associated with Python).
+
+If double-clicking doesn’t work, right-click → Open with → Python.
+
+Optional: Use a standalone executable (main.exe) for one-click play. See Optional: Standalone Executable
+.
+
+macOS
+
+Open Terminal.
+
+Navigate to the project folder:
+
+cd /path/to/my_game
+
+
+Run the game:
+
+python3 main.py
+
+
+macOS often requires python3 instead of python.
+
+Optional: Build a .app using PyInstaller for one-click play.
+
+Linux
+
+Open your terminal.
+
+Navigate to the project folder:
+
+cd /path/to/my_game
+
+
+Run the game:
+
+python3 main.py
+
+
+Make sure Python 3 is installed (python3 --version).
+
+Optional: Standalone Executable
+
+If you don’t want to install Python:
+
+Install PyInstaller:
+
+pip install pyinstaller
+
+
+Build a standalone executable:
+
+pyinstaller --onefile main.py
+
+
+The executable will be in the dist/ folder.
+
+Windows: dist/main.exe (double-click to play)
+
+macOS/Linux: dist/main (make executable: chmod +x dist/main)
+
+Include these executables in GitHub Releases for easier downloads.
+
+Assets
+
+All images, sounds, and other assets are in the assets/ folder.
+Do not move or rename these, or the game may break.
+
+Support
+
+If you encounter any problems:
+
+Make sure you have Python 3.10+ installed.
+
+Make sure dependencies are installed via pip install -r requirements.txt.
+
+Open an issue on GitHub for bugs or questions.
