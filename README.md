@@ -4,4 +4,4 @@ Contributions:
 
 Analeigh Nwokolo - Everything in Spiritbound_title other than code related to HELP! and the separation of background music for the game and menu. Everything involving stages. The original code in Spiritbound_game.
 
-Ryan Schutte - The HELP! video/code, the background music for the game. Everything in spiritbound_game (built off of the original sprites, colored-background made by Analeigh).
+Ryan Schutte - The HELP! video/code, the background music loop for the game. Everything in spiritbound_game (built off of the original sprites, colored-background made by Analeigh).
