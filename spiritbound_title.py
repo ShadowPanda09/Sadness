@@ -1,3 +1,4 @@
+#All code in this file was made by AI
 import pygame
 import sys
 import math
@@ -284,3 +285,4 @@ def main_menu():
 
 if __name__ == "__main__":
     main_menu()
+
