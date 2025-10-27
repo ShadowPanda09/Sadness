@@ -1,3 +1,4 @@
+#All code in this file was made by AI
 import pygame
 import sys
 import random
@@ -892,3 +893,4 @@ class Game:
 # ---------------- Run Game ----------------
 if __name__ == "__main__":
     Game().run()
+
