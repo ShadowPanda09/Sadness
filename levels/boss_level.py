@@ -536,6 +536,50 @@ class BossLevel:
         self.victory_confetti = []
         self.victory_bg_color = pygame.Color(0, 0, 0)
 
+        # --- MUSIC SETUP ---
+        try:
+            pygame.mixer.init()
+            parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+            self.bgm_path = os.path.join(parent_dir, "assets", "spiritbound_boss_music.wav")
+            pygame.mixer.music.load(self.bgm_path)
+            pygame.mixer.music.play(loops=-1)  # loop indefinitely
+        except Exception as e:
+            print(f"Error loading music: {e}")
+
+    def handle_retry_events(self):
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.mixer.music.stop()
+                pygame.quit()
+                sys.exit()
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                self.player.attack(pygame.mouse.get_pos(), self.boss)
+            elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                self.player.release_attack()
+            elif event.type == pygame.KEYDOWN and self.show_retry:
+                if event.key == pygame.K_r:
+                    self.respawn_player()
+                    self.show_retry = False
+                elif event.key == pygame.K_m:
+                    try:
+                        pygame.mixer.music.stop()  # stop music immediately
+                        pygame.display.quit()
+                        spiritbound_title.main_menu()
+                    except Exception:
+                        pygame.quit()
+                        sys.exit()
+                    return
+            elif event.type == pygame.KEYDOWN and self.show_victory:
+                if event.key == pygame.K_m:
+                    try:
+                        pygame.mixer.music.stop()
+                        pygame.display.quit()
+                        spiritbound_title.main_menu()
+                    except Exception:
+                        pygame.quit()
+                        sys.exit()
+                    return
+
     def draw_victory_screen(self):
         font = pygame.font.SysFont(None, 72)
         small_font = pygame.font.SysFont(None, 36)
@@ -701,40 +745,6 @@ class BossLevel:
                 (self.attack_text_pos.x - text_surf.get_width() // 2,
                  self.attack_text_pos.y - text_surf.get_height() // 2)
             )
-
-    # --- Retry events ---
-    def handle_retry_events(self):
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
-            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                self.player.attack(pygame.mouse.get_pos(), self.boss)
-            elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-                self.player.release_attack()
-            elif event.type == pygame.KEYDOWN and self.show_retry:
-                if event.key == pygame.K_r:
-                    self.respawn_player()
-                    self.show_retry = False
-                elif event.key == pygame.K_m:
-                    try:
-                        pygame.mixer.stop()
-                        pygame.display.quit()
-                        spiritbound_title.main_menu()
-                    except Exception:
-                        pygame.quit()
-                        sys.exit()
-                    return
-            elif event.type == pygame.KEYDOWN and self.show_victory:
-                if event.key == pygame.K_m:
-                    try:
-                        pygame.mixer.stop()
-                        pygame.display.quit()
-                        spiritbound_title.main_menu()
-                    except Exception:
-                        pygame.quit()
-                        sys.exit()
-                    return
 
     def respawn_player(self):
         self.player.health = 100
